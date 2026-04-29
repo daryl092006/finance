@@ -18,7 +18,7 @@ const CATEGORY_ICONS: Record<CategoryId, React.ReactNode> = {
   projets: <Rocket size={16} />,
   plaisir: <PartyPopper size={16} />,
   imprevus: <Siren size={16} />,
-};
+}; 
 
 function App() {
   const [loading, setLoading] = useState(true);

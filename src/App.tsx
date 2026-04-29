@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
-  TrendingUp, TrendingDown, Plus, ArrowRight, AlertTriangle, 
-  CheckCircle, Flag, RotateCcw, ShieldCheck, X, Calendar, 
-  Landmark, History, Banknote, Home, Target, Settings,
+  TrendingUp, TrendingDown, AlertTriangle, 
+  CheckCircle, RotateCcw, X, Calendar, 
+  Landmark, History, Banknote, Home, Target,
   Briefcase, Zap, Handshake, Gift, Utensils, Car, House, 
   Shield, Rocket, PartyPopper, Siren, Loader2
 } from 'lucide-react';

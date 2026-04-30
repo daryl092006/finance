@@ -43,6 +43,8 @@ function App() {
         const { data: profile } = await supabase.from('user_profiles').select('*').single();
         const { data: expenses } = await supabase.from('expenses').select('*').order('date', { ascending: false });
         const { data: projects } = await supabase.from('projects').select('*');
+        const { data: history } = await supabase.from('month_history').select('*').order('created_at', { ascending: false });
+        const { data: debts_sup } = await supabase.from('internal_debts').select('*').filter('reimbursed', 'eq', false);
 
         if (profile) {
           setState(prev => ({
@@ -50,8 +52,9 @@ function App() {
             baseIncome: profile.base_income || 0,
             emergencyFund: profile.emergency_fund || 0,
             bankBalance: profile.bank_balance || 0,
-            liquid_balance: profile.liquid_balance || 0,
-            appDate: profile.app_date || prev.appDate
+            liquidBalance: profile.liquid_balance || 0,
+            appDate: profile.app_date || prev.appDate,
+            allocations: profile.allocations || prev.allocations
           }));
         }
         if (expenses) {
@@ -59,6 +62,16 @@ function App() {
         }
         if (projects) {
           setState(prev => ({ ...prev, projects: projects.map(p => ({ id: p.id, name: p.name, targetAmount: p.target_amount, savedSoFar: p.saved_so_far, deadline: p.deadline, priority: p.priority as any, allocPct: 0 })) }));
+        }
+        if (history) {
+          setState(prev => ({ ...prev, monthHistory: history.map(h => ({ 
+            id: h.id, monthKey: h.month_key, monthName: h.month_name, baseIncome: h.base_income, 
+            totalExpensesByCategory: h.expenses_by_category, toBank: h.to_bank, toLiquid: h.to_liquid, 
+            toProjects: h.to_projects, toEmergency: h.to_emergency, healthScore: h.health_score, surplus: h.surplus 
+          })) }));
+        }
+        if (debts_sup) {
+          setState(prev => ({ ...prev, internalDebts: debts_sup.map(d => ({ id: d.id, from: d.from_category as CategoryId, to: d.to_category as CategoryId, amount: d.amount, date: d.date, reimbursed: d.reimbursed })) }));
         }
       } catch (err) {
         console.error("Erreur de chargement Supabase:", err);
@@ -131,15 +144,20 @@ function App() {
         updates.liquid_balance = next.liquidBalance;
       }
       else if (uiState.incomeType === 'bonus') {
-        next.bankBalance += amount * 0.7;
-        updates.bank_balance = next.bankBalance;
         if (next.projects.length > 0) {
+          next.bankBalance += amount * 0.7;
           const share = (amount * 0.3) / next.projects.length;
           next.projects = next.projects.map(p => ({ ...p, savedSoFar: p.savedSoFar + share }));
-          // Note: Il faudrait sync chaque projet individuellement ici
+          
+          // Sauvegarder la progression des projets en base
+          next.projects.forEach(async p => {
+            await supabase.from('projects').update({ saved_so_far: p.savedSoFar }).eq('id', p.id);
+          });
+
+          updates.bank_balance = next.bankBalance;
         } else { 
-          next.liquidBalance += amount * 0.3; 
-          updates.liquid_balance = next.liquidBalance;
+          next.bankBalance += amount; 
+          updates.bank_balance = next.bankBalance;
         }
       }
       syncProfile(updates);
@@ -164,6 +182,18 @@ function App() {
 
     if (newExpSup) {
       const newExp: Expense = { id: newExpSup.id, categoryId: uiState.expenseCategory, amount, label, date: newExpSup.date };
+      
+      // Sauvegarder les dettes internes générées par le bouclier si nécessaire
+      if (debts.length > 0) {
+        await supabase.from('internal_debts').insert(debts.map(d => ({
+          user_id: '00000000-0000-0000-0000-000000000000',
+          from_category: d.from,
+          to_category: d.to,
+          amount: d.amount,
+          date: new Date().toISOString()
+        })));
+      }
+
       setState(prev => ({ 
         ...prev, 
         expenses: [newExp, ...prev.expenses],
@@ -206,16 +236,69 @@ function App() {
   const handleNextMonth = () => {
     const r = uiState.endOfMonthReport;
     if (!r) return;
-    setState(prev => {
-      const nextDate = new Date(appDateObj); nextDate.setMonth(nextDate.getMonth() + 1);
-      const nextProjects = prev.projects.map(p => ({ ...p, savedSoFar: p.savedSoFar + (r.projectBoosts[p.id] || 0) })).filter(p => p.savedSoFar < p.targetAmount);
-      return {
-        ...prev, appDate: nextDate.toISOString().slice(0, 10), baseIncome: 0, expenses: [],
-        bankBalance: prev.bankBalance + r.toBank, liquidBalance: prev.liquidBalance + r.toLiquid, emergencyFund: prev.emergencyFund + r.toEmergency,
-        projects: nextProjects, monthHistory: [{ id: crypto.randomUUID(), monthKey: appDateObj.toISOString().slice(0, 7), monthName: formattedMonth, baseIncome: prev.baseIncome, totalExpensesByCategory: (Object.keys(CATEGORIES) as CategoryId[]).reduce((a, c) => ({...a, [c]: prev.expenses.filter(e => e.categoryId === c).reduce((s, x) => s + x.amount, 0)}), {} as any), toBank: r.toBank, toLiquid: r.toLiquid, toProjects: r.toProjects, toEmergency: r.toEmergency, healthScore, surplus: r.surplus }, ...prev.monthHistory]
+
+    async function saveMonth() {
+      // 1. Sauvegarder dans month_history
+      const monthData = {
+        user_id: '00000000-0000-0000-0000-000000000000',
+        month_key: appDateObj.toISOString().slice(0, 7),
+        month_name: formattedMonth,
+        base_income: state.baseIncome,
+        surplus: r.surplus,
+        health_score: healthScore,
+        to_bank: r.toBank,
+        to_liquid: r.toLiquid,
+        to_projects: r.toProjects,
+        to_emergency: r.toEmergency,
+        expenses_by_category: (Object.keys(CATEGORIES) as CategoryId[]).reduce((a, c) => ({...a, [c]: state.expenses.filter(e => e.categoryId === c).reduce((s, x) => s + x.amount, 0)}), {} as any)
       };
-    });
-    setUiState(s => ({ ...s, isMonthClosed: false, endOfMonthReport: null }));
+      await supabase.from('month_history').insert(monthData);
+
+      // 2. Marquer les dettes comme remboursées en base
+      if (r.debtReimbursed > 0) {
+         await supabase.from('internal_debts').update({ reimbursed: true }).filter('reimbursed', 'eq', false);
+      }
+
+      // 3. Mettre à jour le profil (balances et date)
+      const nextDate = new Date(appDateObj); nextDate.setMonth(nextDate.getMonth() + 1);
+      await syncProfile({
+        bank_balance: state.bankBalance + r.toBank,
+        liquid_balance: state.liquidBalance + r.toLiquid,
+        emergency_fund: state.emergencyFund + r.toEmergency,
+        app_date: nextDate.toISOString().slice(0, 10)
+      });
+
+      // 4. Mettre à jour l'état local et synchroniser les projets
+      setState(prev => {
+        const nextProjects = prev.projects.map(p => {
+          const newAmount = p.savedSoFar + (r.projectBoosts[p.id] || 0);
+          // Sync en base
+          if (r.projectBoosts[p.id] > 0) {
+            supabase.from('projects').update({ saved_so_far: newAmount }).eq('id', p.id).then();
+          }
+          return { ...p, savedSoFar: newAmount };
+        }).filter(p => p.savedSoFar < p.targetAmount);
+
+        // Supprimer les projets terminés de la base
+        prev.projects.filter(p => (p.savedSoFar + (r.projectBoosts[p.id] || 0)) >= p.targetAmount).forEach(p => {
+          supabase.from('projects').delete().eq('id', p.id).then();
+        });
+
+        // Nettoyer les dépenses courantes (elles sont archivées dans history)
+        supabase.from('expenses').delete().neq('id', '00000000-0000-0000-0000-000000000000').then(); // Supprime tout
+
+        return {
+          ...prev, appDate: nextDate.toISOString().slice(0, 10), baseIncome: 0, expenses: [],
+          bankBalance: prev.bankBalance + r.toBank, liquidBalance: prev.liquidBalance + r.toLiquid, emergencyFund: prev.emergencyFund + r.toEmergency,
+          projects: nextProjects, 
+          monthHistory: [{ id: crypto.randomUUID(), ...monthData, totalExpensesByCategory: monthData.expenses_by_category } as any, ...prev.monthHistory],
+          internalDebts: prev.internalDebts.map(d => ({...d, reimbursed: true}))
+        };
+      });
+      setUiState(s => ({ ...s, isMonthClosed: false, endOfMonthReport: null }));
+    }
+
+    saveMonth();
   };
 
   if (loading) {
@@ -291,7 +374,7 @@ function App() {
                     </strong>
                     <p>Revenu mensuel prévisible.</p>
                     <div style={{marginTop:8, fontSize:'0.75rem', borderTop:'1px solid var(--glass-border)', paddingTop:8}}>
-                      RÈGLE : 100% réparti entre vos 7 poches.
+                      RÈGLE : 100% réparti entre vos poches actives.
                     </div>
                   </div>
                 )}
@@ -319,12 +402,12 @@ function App() {
                 )}
                 {uiState.incomeType === 'bonus' && (
                   <div>
-                    <strong style={{color:'var(--accent-tertiary)', display:'flex', alignItems:'center', gap:6, marginBottom:4}}>
+                    <strong style={{color: 'var(--accent-tertiary)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4}}>
                       <Gift size={14}/> DÉFINITION : CADEAUX
                     </strong>
                     <p>Argent reçu exceptionnellement.</p>
-                    <div style={{marginTop:8, fontSize:'0.75rem', borderTop:'1px solid var(--glass-border)', paddingTop:8}}>
-                      RÈGLE : 70% Banque / 30% Projets.
+                    <div style={{marginTop: 8, fontSize: '0.75rem', borderTop: '1px solid var(--glass-border)', paddingTop: 8}}>
+                      RÈGLE : {state.projects.length > 0 ? '70% Banque / 30% Projets' : '100% Banque (pas de projet)'}.
                     </div>
                   </div>
                 )}
@@ -349,17 +432,19 @@ function App() {
 
           <section className="glass-panel" style={{padding:20}}>
             <h3 style={{marginBottom:16, fontSize:'1.1rem', fontWeight:600}}>Budgets mensuels</h3>
-            {(Object.keys(CATEGORIES) as CategoryId[]).map(k => {
-              const b = budgets[k]; const c = CATEGORIES[k];
-              return (
-                <div key={k} style={{marginBottom:16}}>
-                  <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.9rem', marginBottom:4}}>
-                    <span style={{display:'flex', alignItems:'center', gap:8}}>{CATEGORY_ICONS[k]} {c.name}</span>
-                    <span style={{color:b.overBudget?'var(--danger)':'inherit', fontWeight:600}}>{fmt(b.remaining)} F</span>
+            {(Object.keys(CATEGORIES) as CategoryId[])
+              .filter(k => k !== 'projets' || state.projects.length > 0)
+              .map(k => {
+                const b = budgets[k]; const c = CATEGORIES[k];
+                return (
+                  <div key={k} style={{marginBottom:16}}>
+                    <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.9rem', marginBottom:4}}>
+                      <span style={{display:'flex', alignItems:'center', gap:8}}>{CATEGORY_ICONS[k]} {c.name}</span>
+                      <span style={{color:b.overBudget?'var(--danger)':'inherit', fontWeight:600}}>{fmt(b.remaining)} F</span>
+                    </div>
+                    <div className="category-progress-container"><div className="category-progress-bar" style={{width:`${b.pct}%`, backgroundColor:b.overBudget?'var(--danger)':c.color}}/></div>
                   </div>
-                  <div className="category-progress-container"><div className="category-progress-bar" style={{width:`${b.pct}%`, backgroundColor:b.overBudget?'var(--danger)':c.color}}/></div>
-                </div>
-              );
+                );
             })}
           </section>
           <button className="btn btn-secondary" style={{width:'100%', marginTop:16}} onClick={handleCloseMonth} disabled={stabilizedBase===0}>Clôturer le mois</button>
@@ -396,7 +481,10 @@ function App() {
                      <Calendar size={12}/> Échéance : {p.deadline || 'Non définie'}
                    </div>
                 </div>
-                <button onClick={()=>setState(s=>({...s, projects:s.projects.filter(x=>x.id!==p.id)}))} style={{padding:4}}><X size={16}/></button>
+                <button onClick={async ()=>{
+                  await supabase.from('projects').delete().eq('id', p.id);
+                  setState(s=>({...s, projects:s.projects.filter(x=>x.id!==p.id)}));
+                }} style={{padding:4}}><X size={16}/></button>
               </div>
               <div className="category-progress-container" style={{marginTop:12, height:8}}><div className="category-progress-bar" style={{width:`${Math.min(100, (p.savedSoFar/p.targetAmount)*100)}%`, backgroundColor:CATEGORIES.projets.color}}/></div>
               <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.85rem', marginTop:8}}>

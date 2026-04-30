@@ -71,10 +71,10 @@ export function computeBudgets(
   totalSpent: number;
   epargneTriggered: boolean;
 } {
-  // Si pas de projets → allocation projets va en épargne
+  // Si pas de projets → pas d'allocation projet
   const hasProjects = projects.length > 0;
   const projetsAlloc = hasProjects ? (allocations.projets ?? 0.24) : 0;
-  const epargneBonus = hasProjects ? 0 : (allocations.projets ?? 0.24);
+  const epargneBonus = 0; // On ne bascule plus automatiquement sur l'épargne
 
   const raw: Record<CategoryId, number> = {
     nourriture:  baseIncome * (allocations.nourriture  ?? 0.10),
@@ -301,13 +301,10 @@ export function computeEndOfMonth(params: {
       projects.forEach(p => { projectBoosts[p.id] = (projectBoosts[p.id] ?? 0) + boostShare / projects.length; });
       toProjects += boostShare;
       message = `Surplus de ${Math.round(surplus).toLocaleString('fr-FR')} F : 50% Banque, 50% Projets.`;
-    } else if (surplus > 10000) {
-      toBank += surplus * 0.70;
-      toLiquid += surplus * 0.30;
-      message = `Surplus de ${Math.round(surplus).toLocaleString('fr-FR')} F : 70% Banque, 30% Liquide.`;
     } else {
-      toLiquid += surplus;
-      message = `Surplus de ${Math.round(surplus).toLocaleString('fr-FR')} F : 100% Liquide.`;
+      // Si pas de projets, tout va à la banque pour sécuriser
+      toBank += surplus;
+      message = `Surplus de ${Math.round(surplus).toLocaleString('fr-FR')} F intégralement versé à la Banque.`;
     }
   } else {
     status = 'warning';

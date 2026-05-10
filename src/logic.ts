@@ -8,11 +8,13 @@ export const CATEGORIES: Record<CategoryId, CategoryMeta> = {
   projets:     { name: 'Projets',            color: '#ec4899', emoji: '', minPct: 0.00, defPct: 0.24 },
   plaisir:     { name: 'Plaisir',            color: '#06b6d4', emoji: '', minPct: 0.05, defPct: 0.15 },
   imprevus:    { name: 'Imprévus',           color: '#f43f5e', emoji: '', minPct: 0.03, defPct: 0.05 },
+  remboursement: { name: 'Remboursements',   color: '#22c55e', emoji: '', minPct: 0,    defPct: 0    },
 };
 
 export const DEFAULT_ALLOCATIONS: Record<CategoryId, number> = {
   nourriture: 0.10, transport: 0.13, vieCourante: 0.13,
   epargne: 0.20, projets: 0.24, plaisir: 0.15, imprevus: 0.05,
+  remboursement: 0,
 };
 
 // Répartition des % projets selon priorité
@@ -84,11 +86,15 @@ export function computeBudgets(
     projets:     baseIncome * projetsAlloc,
     plaisir:     baseIncome * (allocations.plaisir     ?? 0.15),
     imprevus:    baseIncome * (allocations.imprevus    ?? 0.05),
+    remboursement: 0,
   };
 
-  const spentByCat: Record<CategoryId, number> = { nourriture: 0, transport: 0, vieCourante: 0, epargne: 0, projets: 0, plaisir: 0, imprevus: 0 };
+  const spentByCat: Record<CategoryId, number> = { nourriture: 0, transport: 0, vieCourante: 0, epargne: 0, projets: 0, plaisir: 0, imprevus: 0, remboursement: 0 };
   let totalSpent = 0;
-  expenses.forEach(e => { spentByCat[e.categoryId] += e.amount; totalSpent += e.amount; });
+  expenses.forEach(e => { 
+    spentByCat[e.categoryId] += e.amount; 
+    if (e.categoryId !== 'remboursement') totalSpent += e.amount; 
+  });
 
   // Bouclier : copie mutable des budgets disponibles
   const avail = { ...raw };

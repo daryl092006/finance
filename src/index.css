@@ -218,3 +218,17 @@ body {
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 10px; }
+
+.expense-item {
+  transition: transform 0.2s, background-color 0.2s;
+}
+
+.expense-item:active {
+  transform: scale(0.98);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.hover-danger:hover {
+  color: var(--danger) !important;
+  background: rgba(239, 68, 68, 0.1) !important;
+}

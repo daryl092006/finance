@@ -1,7 +1,7 @@
-export type CategoryId = 'nourriture' | 'transport' | 'vieCourante' | 'epargne' | 'projets' | 'plaisir' | 'imprevus';
+export type CategoryId = 'nourriture' | 'transport' | 'vieCourante' | 'epargne' | 'projets' | 'plaisir' | 'imprevus' | 'remboursement';
 export type IncomeType = 'base' | 'irregulier' | 'remboursement' | 'bonus';
 export type ProjectPriority = 'balanced' | 'priority1' | 'urgency1';
-export type TabId = 'home' | 'projects' | 'vault' | 'score';
+export type TabId = 'home' | 'projects' | 'vault' | 'history' | 'score';
 
 export interface Expense {
   id: string;

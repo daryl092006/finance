@@ -1,11 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { 
-  TrendingUp, TrendingDown, AlertTriangle, 
-  CheckCircle, RotateCcw, X, Calendar, 
-  Landmark, History, Banknote, Home, Target,
-  Briefcase, Zap, Handshake, Gift, Utensils, Car, House, 
-  Shield, Rocket, PartyPopper, Siren, Loader2
-} from 'lucide-react';
+import {TrendingUp, TrendingDown, AlertTriangle, CheckCircle, RotateCcw, X, Calendar, Landmark, History, Banknote, Home, Target, Briefcase, Zap, Handshake, Gift, Utensils, Car, House, Shield, Rocket, PartyPopper, Siren, Loader2, Activity, List} from 'lucide-react';
 import { supabase } from './supabase';
 import type { CategoryId, IncomeType, Expense, Project, InternalDebt, MonthRecord, AppState, TabId } from './types';
 import { CATEGORIES, DEFAULT_ALLOCATIONS, computeBudgets, computeEndOfMonth, computeHealthScore, stabilizedBaseIncome, fmt } from './logic';
@@ -18,6 +12,7 @@ const CATEGORY_ICONS: Record<CategoryId, React.ReactNode> = {
   projets: <Rocket size={16} />,
   plaisir: <PartyPopper size={16} />,
   imprevus: <Siren size={16} />,
+  remboursement: <Handshake size={16} />,
 }; 
 
 function App() {
@@ -96,6 +91,7 @@ function App() {
     expenseAmount: '',
     expenseLabel: '',
     expenseCategory: 'nourriture' as CategoryId,
+    expenseDate: new Date().toISOString().slice(0, 10),
     projName: '',
     projTarget: '',
     projDeadline: '',
@@ -142,6 +138,20 @@ function App() {
       else if (uiState.incomeType === 'remboursement') { 
         next.liquidBalance += amount; 
         updates.liquid_balance = next.liquidBalance;
+
+        // Enregistrer le remboursement dans les dépenses (catégorie spéciale)
+        supabase.from('expenses').insert({
+          user_id: '00000000-0000-0000-0000-000000000000',
+          category_id: 'remboursement',
+          amount: amount,
+          label: uiState.expenseLabel || 'Remboursement reçu',
+          date: new Date().toISOString()
+        }).select().single().then(({ data: e }) => {
+          if (e) {
+            const newExp: Expense = { id: e.id, categoryId: 'remboursement', amount: e.amount, label: e.label, date: e.date };
+            setState(s => ({ ...s, expenses: [newExp, ...s.expenses] }));
+          }
+        });
       }
       else if (uiState.incomeType === 'bonus') {
         if (next.projects.length > 0) {
@@ -177,30 +187,41 @@ function App() {
       category_id: uiState.expenseCategory,
       amount,
       label,
-      date: new Date().toISOString()
+      date: uiState.expenseDate || new Date().toISOString()
     }).select().single();
 
     if (newExpSup) {
       const newExp: Expense = { id: newExpSup.id, categoryId: uiState.expenseCategory, amount, label, date: newExpSup.date };
       
-      // Sauvegarder les dettes internes générées par le bouclier si nécessaire
-      if (debts.length > 0) {
-        await supabase.from('internal_debts').insert(debts.map(d => ({
-          user_id: '00000000-0000-0000-0000-000000000000',
-          from_category: d.from,
-          to_category: d.to,
-          amount: d.amount,
-          date: new Date().toISOString()
-        })));
-      }
-
       setState(prev => ({ 
         ...prev, 
-        expenses: [newExp, ...prev.expenses],
-        internalDebts: [...prev.internalDebts, ...debts.map(d => ({...d, id: crypto.randomUUID(), date: new Date().toISOString(), reimbursed: false}))]
+        expenses: [newExp, ...prev.expenses]
       }));
     }
     setUiState(s => ({ ...s, expenseAmount: '', expenseLabel: '', showAddExpense: false }));
+  };
+
+  const handleDeleteExpense = async (id: string) => {
+    const expenseToDelete = state.expenses.find(e => e.id === id);
+    if (!expenseToDelete) return;
+
+    const { error } = await supabase.from('expenses').delete().eq('id', id);
+    if (!error) {
+      if (expenseToDelete.categoryId === 'remboursement') {
+        const newLiquid = state.liquidBalance - expenseToDelete.amount;
+        await syncProfile({ liquid_balance: newLiquid });
+        setState(prev => ({
+          ...prev,
+          expenses: prev.expenses.filter(e => e.id !== id),
+          liquidBalance: newLiquid
+        }));
+      } else {
+        setState(prev => ({
+          ...prev,
+          expenses: prev.expenses.filter(e => e.id !== id)
+        }));
+      }
+    }
   };
 
   const handleAddProject = async (e: React.FormEvent) => {
@@ -229,7 +250,16 @@ function App() {
   };
 
   const handleCloseMonth = () => {
-    const report = computeEndOfMonth({ baseIncome: stabilizedBase, budgets, projects: state.projects, internalDebts: state.internalDebts, emergencyFund: state.emergencyFund, urgencyTarget: stabilizedBase * 0.4 * 3 });
+    // Transformer les dettes dynamiques au format attendu par le report
+    const activeDebts = debts.map(d => ({ ...d, id: crypto.randomUUID(), date: new Date().toISOString(), reimbursed: false }));
+    const report = computeEndOfMonth({ 
+      baseIncome: stabilizedBase, 
+      budgets, 
+      projects: state.projects, 
+      internalDebts: activeDebts, 
+      emergencyFund: state.emergencyFund, 
+      urgencyTarget: stabilizedBase * 0.4 * 3 
+    });
     setUiState(s => ({ ...s, isMonthClosed: true, endOfMonthReport: report }));
   };
 
@@ -345,17 +375,40 @@ function App() {
           ))}
           
           <section className="glass-panel balance-card">
-            <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.9rem'}}><span>Reste à vivre</span><span>Score: {healthScore}</span></div>
-            <h2 className="balance-amount">{fmt(stabilizedBase - totalSpent)} F</h2>
-            <div style={{display:'flex', gap:16, fontSize:'0.85rem', marginTop:12}}>
-              <span style={{color:'var(--success)', display:'flex', alignItems:'center', gap:4}}><TrendingUp size={14}/> {fmt(stabilizedBase)} F</span>
-              <span style={{color:'var(--danger)', display:'flex', alignItems:'center', gap:4}}><TrendingDown size={14}/> {fmt(totalSpent)} F</span>
+            <div style={{textAlign: 'center', marginBottom: 20}}>
+              <span style={{fontSize: '0.9rem', opacity: 0.8}}>Total Global disponible</span>
+              <h2 className="balance-amount" style={{fontSize: '2.8rem', margin: '4px 0'}}>
+                {fmt((state.bankBalance + state.liquidBalance + state.emergencyFund) + (stabilizedBase - totalSpent))} F
+              </h2>
+            </div>
+
+            <div style={{display: 'flex', flexDirection: 'column', gap: 10, padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', marginBottom: 16}}>
+              <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem'}}>
+                <span style={{display: 'flex', alignItems: 'center', gap: 6}}>
+                  <Shield size={14} color="var(--accent-secondary)"/> Patrimoine sécurisé
+                </span>
+                <span style={{fontWeight: 600}}>{fmt(state.bankBalance + state.liquidBalance + state.emergencyFund)} F</span>
+              </div>
+              <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem'}}>
+                <span style={{display: 'flex', alignItems: 'center', gap: 6}}>
+                  <Banknote size={14} color="var(--success)"/> Reste à vivre (Mois)
+                </span>
+                <span style={{fontWeight: 600}}>{fmt(stabilizedBase - totalSpent)} F</span>
+              </div>
+            </div>
+
+            <div style={{display:'flex', justifyContent:'space-between', alignItems: 'center', fontSize:'0.85rem'}}>
+              <div style={{display:'flex', gap:12}}>
+                <span style={{color:'var(--success)', display:'flex', alignItems:'center', gap:4}}><TrendingUp size={14}/> {fmt(stabilizedBase)} F</span>
+                <span style={{color:'var(--danger)', display:'flex', alignItems:'center', gap:4}}><TrendingDown size={14}/> {fmt(totalSpent)} F</span>
+              </div>
+              <span style={{opacity: 0.8}}>Score: {healthScore}</span>
             </div>
           </section>
 
           <section className="quick-actions">
             <button className="btn btn-primary" onClick={() => setUiState(s=>({...s, showAddMoney:!s.showAddMoney, showAddExpense:false}))}>+ Revenu</button>
-            <button className="btn btn-secondary" onClick={() => setUiState(s=>({...s, showAddExpense:!s.showAddExpense, showAddMoney:false}))} disabled={stabilizedBase===0}>- Dépense</button>
+            <button className="btn btn-secondary" onClick={() => setUiState(s=>({...s, showAddExpense:!s.showAddExpense, showAddMoney:false, expenseDate: state.appDate}))} disabled={stabilizedBase===0}>- Dépense</button>
           </section>
 
           {uiState.showAddMoney && (
@@ -419,21 +472,24 @@ function App() {
 
           {uiState.showAddExpense && (
             <form className="glass-panel" style={{padding:20, marginBottom:16}} onSubmit={handleAddExpense}>
-              <input className="input-field" style={{width:'100%', marginBottom:8}} value={uiState.expenseLabel} onChange={e=>setUiState(s=>({...s, expenseLabel:e.target.value}))} placeholder="Libellé" required />
-              <input type="number" className="input-field" style={{width:'100%', marginBottom:8}} value={uiState.expenseAmount} onChange={e=>setUiState(s=>({...s, expenseAmount:e.target.value}))} placeholder="Montant" required />
-              <select className="input-field" style={{width:'100%', marginBottom:8}} value={uiState.expenseCategory} onChange={e=>setUiState(s=>({...s, expenseCategory:e.target.value as any}))}>
-                {(Object.keys(CATEGORIES) as CategoryId[]).map(k=>(
-                  <option key={k} value={k}>{CATEGORIES[k].name}</option>
-                ))}
-              </select>
-              <button className="btn btn-primary" style={{width:'100%'}}>Déduire</button>
+              <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8}}>
+                <input type="date" className="input-field" value={uiState.expenseDate} onChange={e=>setUiState(s=>({...s, expenseDate:e.target.value}))} required />
+                <select className="input-field" value={uiState.expenseCategory} onChange={e=>setUiState(s=>({...s, expenseCategory:e.target.value as any}))}>
+                  {(Object.keys(CATEGORIES) as CategoryId[]).map(k=>(
+                    <option key={k} value={k}>{CATEGORIES[k].name}</option>
+                  ))}
+                </select>
+              </div>
+              <input className="input-field" style={{width:'100%', marginBottom:8}} value={uiState.expenseLabel} onChange={e=>setUiState(s=>({...s, expenseLabel:e.target.value}))} placeholder="Libellé (ex: Courses, Essence...)" required />
+              <input type="number" className="input-field" style={{width:'100%', marginBottom:8}} value={uiState.expenseAmount} onChange={e=>setUiState(s=>({...s, expenseAmount:e.target.value}))} placeholder="Montant (F)" required />
+              <button className="btn btn-primary" style={{width:'100%'}}>Confirmer la dépense</button>
             </form>
           )}
 
           <section className="glass-panel" style={{padding:20}}>
             <h3 style={{marginBottom:16, fontSize:'1.1rem', fontWeight:600}}>Budgets mensuels</h3>
             {(Object.keys(CATEGORIES) as CategoryId[])
-              .filter(k => k !== 'projets' || state.projects.length > 0)
+              .filter(k => k !== 'remboursement' && (k !== 'projets' || state.projects.length > 0))
               .map(k => {
                 const b = budgets[k]; const c = CATEGORIES[k];
                 return (
@@ -446,6 +502,16 @@ function App() {
                   </div>
                 );
             })}
+
+            {/* Section spéciale pour les remboursements reçus */}
+            {budgets.remboursement.spent > 0 && (
+              <div style={{marginTop: 24, paddingTop: 16, borderTop: '1px dashed var(--glass-border)'}}>
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.9rem', color: 'var(--success)'}}>
+                  <span style={{display:'flex', alignItems:'center', gap:8}}><Handshake size={16}/> Total Remboursements</span>
+                  <strong style={{fontSize: '1.1rem'}}>+{fmt(budgets.remboursement.spent)} F</strong>
+                </div>
+              </div>
+            )}
           </section>
           <button className="btn btn-secondary" style={{width:'100%', marginTop:16}} onClick={handleCloseMonth} disabled={stabilizedBase===0}>Clôturer le mois</button>
         </div>
@@ -520,6 +586,124 @@ function App() {
         </div>
       )}
 
+      {activeTab === 'history' && (
+        <div className="tab-content">
+          <header className="header">
+            <h1 className="gradient-text">Historique</h1>
+          </header>
+
+          <div style={{display: 'flex', flexDirection: 'column', gap: 12}}>
+            {state.expenses.filter(e => e.categoryId !== 'remboursement').length === 0 && state.expenses.filter(e => e.categoryId === 'remboursement').length === 0 ? (
+              <div className="glass-panel" style={{padding: 40, textAlign: 'center', color: 'var(--text-secondary)'}}>
+                <List size={48} style={{opacity: 0.2, marginBottom: 16}} />
+                <p>Aucune transaction pour ce mois.</p>
+              </div>
+            ) : (
+              <>
+                {state.expenses.filter(e => e.categoryId !== 'remboursement').map(exp => (
+                  <div key={exp.id} className="glass-panel expense-item" style={{
+                    padding: '12px 16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    justifyContent: 'space-between'
+                  }}>
+                    <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+                      <div style={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: '12px',
+                        backgroundColor: CATEGORIES[exp.categoryId].color + '22',
+                        color: CATEGORIES[exp.categoryId].color,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}>
+                        {CATEGORY_ICONS[exp.categoryId]}
+                      </div>
+                      <div>
+                        <div style={{fontWeight: 600, fontSize: '0.95rem'}}>{exp.label}</div>
+                        <div style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>
+                          {new Date(exp.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} • {CATEGORIES[exp.categoryId].name}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+                      <div style={{fontWeight: 700, color: 'var(--danger)', fontSize: '1rem'}}>
+                        -{fmt(exp.amount)} F
+                      </div>
+                      <button onClick={() => handleDeleteExpense(exp.id)} style={{padding: 8, borderRadius: '8px', color: 'var(--text-secondary)', background: 'transparent', cursor: 'pointer', transition: 'all 0.2s'}} className="hover-danger">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {state.expenses.filter(e => e.categoryId === 'remboursement').length > 0 && (
+                  <>
+                    <h3 style={{marginTop: 16, marginBottom: 8, fontSize: '1rem', color: 'var(--success)'}}>Remboursements reçus</h3>
+                    {state.expenses.filter(e => e.categoryId === 'remboursement').map(exp => (
+                      <div key={exp.id} className="glass-panel expense-item" style={{
+                        padding: '12px 16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        justifyContent: 'space-between',
+                        borderLeft: '4px solid var(--success)'
+                      }}>
+                        <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+                          <div style={{
+                            width: 40, height: 40, borderRadius: '12px',
+                            backgroundColor: 'rgba(34, 197, 94, 0.1)', color: 'var(--success)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center'
+                          }}>
+                            <Handshake size={18} />
+                          </div>
+                          <div>
+                            <div style={{fontWeight: 600, fontSize: '0.95rem'}}>{exp.label}</div>
+                            <div style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>
+                              {new Date(exp.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+                          <div style={{fontWeight: 700, color: 'var(--success)', fontSize: '1rem'}}>
+                            +{fmt(exp.amount)} F
+                          </div>
+                          <button onClick={() => handleDeleteExpense(exp.id)} style={{padding: 8, borderRadius: '8px', color: 'var(--text-secondary)', background: 'transparent', cursor: 'pointer', transition: 'all 0.2s'}} className="hover-danger">
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+
+            {state.monthHistory.length > 0 && (
+              <>
+                <h3 style={{marginTop: 24, marginBottom: 12, fontSize: '1rem', opacity: 0.8}}>Mois passés</h3>
+                {state.monthHistory.map(h => (
+                  <div key={h.id} className="glass-panel" style={{padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: 0.8}}>
+                    <div>
+                      <div style={{fontWeight: 600}}>{h.monthName}</div>
+                      <div style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>
+                        Score : {h.healthScore}/100
+                      </div>
+                    </div>
+                    <div style={{textAlign: 'right'}}>
+                      <div style={{fontWeight: 600}}>{fmt(Object.values(h.totalExpensesByCategory).reduce((a, b) => a + b, 0))} F</div>
+                      <div style={{fontSize: '0.75rem', color: 'var(--success)'}}>+{fmt(h.surplus)} F surplus</div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeTab === 'score' && (
         <div className="tab-content">
           <header className="header"><h1>Santé Financière</h1></header>
@@ -529,6 +713,9 @@ function App() {
               <div style={{fontSize:'1rem', color:'var(--text-secondary)', marginTop:8}}>Sur 100 points</div>
             </div>
             <div style={{marginTop:32, padding:'16px', background:'rgba(255,255,255,0.05)', borderRadius:'16px', fontSize:'0.9rem', textAlign:'left'}}>
+              <p style={{marginBottom: 16, color: 'var(--accent-primary)', fontSize: '0.8rem', opacity: 0.8, textAlign: 'center'}}>
+                Note : L'historique détaillé des transactions se trouve désormais dans l'onglet <strong>Historique</strong>.
+              </p>
               <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:8}}>
                 <CheckCircle size={16} color={!epargneTriggered ? 'var(--success)' : 'var(--text-secondary)'}/> Bouclier intact (+30)
               </div>
@@ -546,8 +733,9 @@ function App() {
       <nav className="bottom-nav">
         <button className={`nav-item ${activeTab==='home'?'active':''}`} onClick={()=>setActiveTab('home')}><Home size={20}/><span>Accueil</span></button>
         <button className={`nav-item ${activeTab==='projects'?'active':''}`} onClick={()=>setActiveTab('projects')}><Target size={20}/><span>Projets</span></button>
+        <button className={`nav-item ${activeTab==='history'?'active':''}`} onClick={()=>setActiveTab('history')}><History size={20}/><span>Historique</span></button>
         <button className={`nav-item ${activeTab==='vault'?'active':''}`} onClick={()=>setActiveTab('vault')}><Landmark size={20}/><span>Coffre</span></button>
-        <button className={`nav-item ${activeTab==='score'?'active':''}`} onClick={()=>setActiveTab('score')}><History size={20}/><span>Score</span></button>
+        <button className={`nav-item ${activeTab==='score'?'active':''}`} onClick={()=>setActiveTab('score')}><Activity size={20}/><span>Score</span></button>
       </nav>
     </div>
   );
